@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\PassengerRideshareController;
 use App\Http\Controllers\Api\WalletController;
 use App\Http\Controllers\Api\WalletWebhookController;
 use App\Http\Controllers\Api\PayPalController;
+use App\Http\Controllers\Api\OtpController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -34,6 +35,13 @@ Route::prefix('auth')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
     Route::post('/send-phone-verification', [AuthController::class, 'sendPhoneVerification']);
     Route::post('/verify-phone', [AuthController::class, 'verifyPhone']);
+});
+
+// OTP Routes (Public)
+Route::prefix('otp')->group(function () {
+    Route::post('/send', [OtpController::class, 'sendOtp']);
+    Route::post('/verify', [OtpController::class, 'verifyOtp']);
+    Route::post('/resend', [OtpController::class, 'resendOtp']);
 });
 
 // Protected Routes

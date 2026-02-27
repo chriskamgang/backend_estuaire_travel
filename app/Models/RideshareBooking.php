@@ -11,6 +11,9 @@ class RideshareBooking extends Model
         'user_id',
         'seats_requested',
         'total_price',
+        'escrow_amount',
+        'escrow_released',
+        'escrow_released_at',
         'status',
         'pickup_location',
         'dropoff_location',
@@ -18,8 +21,11 @@ class RideshareBooking extends Model
     ];
 
     protected $casts = [
-        'total_price' => 'decimal:2',
-        'seats_requested' => 'integer',
+        'total_price'        => 'decimal:2',
+        'escrow_amount'      => 'decimal:2',
+        'escrow_released'    => 'boolean',
+        'escrow_released_at' => 'datetime',
+        'seats_requested'    => 'integer',
     ];
 
     // Relations

@@ -35,6 +35,9 @@ class RideshareTrip extends Model
         'recurring',
         'recurring_days',
         'status',
+        'guarantor_name',
+        'guarantor_phone',
+        'guarantor_notified',
     ];
 
     protected $casts = [
@@ -43,6 +46,7 @@ class RideshareTrip extends Model
         'recurring_days' => 'array',
         'instant' => 'boolean',
         'recurring' => 'boolean',
+        'guarantor_notified' => 'boolean',
         'price_per_seat' => 'decimal:2',
         'departure_latitude' => 'decimal:8',
         'departure_longitude' => 'decimal:8',

@@ -41,4 +41,11 @@ return [
         'secret_key' => env('FREEMOPAY_SECRET_KEY', ''),
     ],
 
+    'nexah' => [
+        'base_url'  => env('NEXAH_BASE_URL', 'https://smsvas.com/bulk/public/index.php/api/v1'),
+        'username'  => env('NEXAH_USERNAME', ''),
+        'password'  => env('NEXAH_PASSWORD', ''),
+        'sender_id' => env('NEXAH_SENDER_ID', 'UES'),
+    ],
+
 ];

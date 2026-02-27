@@ -165,6 +165,41 @@ class WhatsAppService
     }
 
     /**
+     * Notifier le garant d'un chauffeur lors de la création d'un trajet
+     *
+     * @param string $guarantorPhone  Numéro WhatsApp du garant
+     * @param array  $data            [guarantor_name, driver_name, from, to, date, time, seats, price, driver_phone]
+     */
+    public function sendGuarantorNotification(string $guarantorPhone, array $data): bool
+    {
+        $template = Setting::get(
+            'whatsapp_guarantor_message',
+            "🚗 *Estuaire Travel – Notification Garant*\n\nBonjour {{guarantor_name}},\n\nVous êtes le garant de *{{driver_name}}* sur l'application Estuaire Travel.\n\nVotre contact a créé un nouveau trajet de covoiturage :\n\n📍 Trajet : *{{from}} → {{to}}*\n📅 Date : {{date}} à {{time}}\n💺 Places : {{seats}} | 💰 Prix : {{price}} FCFA/place\n📞 Téléphone chauffeur : {{driver_phone}}\n\nEn tant que garant, votre rôle est de confirmer l'identité et la fiabilité du chauffeur pour ses passagers.\n\n_Estuaire Travel_ 🌿"
+        );
+
+        $message = $this->replacePlaceholders($template, $data);
+        return $this->sendMessage($guarantorPhone, $message);
+    }
+
+    /**
+     * Notifier le passager que son paiement est en séquestre (escrow)
+     * et sera libéré au chauffeur après l'embarquement
+     *
+     * @param string $passengerPhone
+     * @param array  $data  [passenger_name, from, to, date, time, amount]
+     */
+    public function sendEscrowNotification(string $passengerPhone, array $data): bool
+    {
+        $template = Setting::get(
+            'whatsapp_escrow_message',
+            "🔒 *Paiement sécurisé – Estuaire Travel*\n\nBonjour {{passenger_name}},\n\nVotre paiement de *{{amount}} FCFA* pour le trajet *{{from}} → {{to}}* du {{date}} à {{time}} a été prélevé et mis en *séquestre sécurisé*.\n\n✅ Votre argent est protégé.\n💡 Il sera versé au chauffeur uniquement après votre *embarquement confirmé par scan QR*.\n\nSi vous ne montez pas dans le véhicule, contactez le support pour un remboursement.\n\n_Estuaire Travel_ 🌿"
+        );
+
+        $message = $this->replacePlaceholders($template, $data);
+        return $this->sendMessage($passengerPhone, $message);
+    }
+
+    /**
      * Tester la connexion UltraMsg avec les credentials actuels
      * Envoie un message de test au numéro donné
      */

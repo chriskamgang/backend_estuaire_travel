@@ -35,23 +35,27 @@ class DriverTripController extends Controller
 
         // Validation
         $validator = Validator::make($request->all(), [
-            'vehicle_id' => 'required|exists:vehicles,id',
+            'vehicle_id'         => 'required|exists:vehicles,id',
             'departure_location' => 'required|string|max:255',
-            'destination' => 'required|string|max:255',
+            'destination'        => 'required|string|max:255',
             'departure_datetime' => 'required|string',
-            'available_seats' => 'required|integer|min:1|max:50',
-            'price' => 'required|numeric|min:0',
-            'description' => 'nullable|string|max:1000',
+            'available_seats'    => 'required|integer|min:1|max:50',
+            'price'              => 'required|numeric|min:0',
+            'description'        => 'nullable|string|max:1000',
+            'guarantor_name'     => 'required|string|max:100',
+            'guarantor_phone'    => 'required|string|max:20',
         ], [
-            'vehicle_id.required' => 'Le véhicule est requis',
-            'vehicle_id.exists' => 'Véhicule non trouvé',
+            'vehicle_id.required'      => 'Le véhicule est requis',
+            'vehicle_id.exists'        => 'Véhicule non trouvé',
             'departure_location.required' => 'Le lieu de départ est requis',
-            'destination.required' => 'La destination est requise',
+            'destination.required'     => 'La destination est requise',
             'departure_datetime.required' => 'La date et l\'heure de départ sont requises',
             'available_seats.required' => 'Le nombre de places est requis',
-            'available_seats.min' => 'Au moins 1 place doit être disponible',
-            'price.required' => 'Le prix est requis',
-            'price.min' => 'Le prix doit être supérieur ou égal à 0',
+            'available_seats.min'      => 'Au moins 1 place doit être disponible',
+            'price.required'           => 'Le prix est requis',
+            'price.min'                => 'Le prix doit être supérieur ou égal à 0',
+            'guarantor_name.required'  => 'Le nom du garant est obligatoire',
+            'guarantor_phone.required' => 'Le contact WhatsApp du garant est obligatoire',
         ]);
 
         if ($validator->fails()) {
@@ -152,24 +156,51 @@ class DriverTripController extends Controller
 
             // Créer le trajet avec les vrais champs de la table
             $trip = RideshareTrip::create([
-                'driver_id' => $driver->id,
-                'vehicle_id' => $request->vehicle_id,
-                'from_city' => $request->departure_location,
-                'to_city' => $request->destination,
-                'date' => $date,
-                'departure_time' => $departureTime,
-                'arrival_time' => $departureTime, // estimé, même valeur par défaut
-                'duration' => '0h00',
-                'price_per_seat' => $request->price,
-                'total_seats' => $vehicle->seats,
-                'available_seats' => $request->available_seats,
-                'departure_latitude' => 0,
+                'driver_id'           => $driver->id,
+                'vehicle_id'          => $request->vehicle_id,
+                'from_city'           => $request->departure_location,
+                'to_city'             => $request->destination,
+                'date'                => $date,
+                'departure_time'      => $departureTime,
+                'arrival_time'        => $departureTime, // estimé, même valeur par défaut
+                'duration'            => '0h00',
+                'price_per_seat'      => $request->price,
+                'total_seats'         => $vehicle->seats,
+                'available_seats'     => $request->available_seats,
+                'departure_latitude'  => 0,
                 'departure_longitude' => 0,
-                'arrival_latitude' => 0,
-                'arrival_longitude' => 0,
-                'additional_notes' => $request->description,
-                'status' => 'scheduled',
+                'arrival_latitude'    => 0,
+                'arrival_longitude'   => 0,
+                'additional_notes'    => $request->description,
+                'status'              => 'scheduled',
+                'guarantor_name'      => $request->guarantor_name,
+                'guarantor_phone'     => $request->guarantor_phone,
+                'guarantor_notified'  => false,
             ]);
+
+            // ─── Notifier le garant par WhatsApp ─────────────────────
+            try {
+                $whatsapp = new WhatsAppService();
+                $dateFormatted = \Carbon\Carbon::parse($date)->locale('fr')->isoFormat('dddd D MMMM YYYY');
+                $notified = $whatsapp->sendGuarantorNotification($request->guarantor_phone, [
+                    'guarantor_name' => $request->guarantor_name,
+                    'driver_name'    => $driver->name,
+                    'from'           => $request->departure_location,
+                    'to'             => $request->destination,
+                    'date'           => $dateFormatted,
+                    'time'           => substr($departureTime, 0, 5),
+                    'seats'          => $request->available_seats,
+                    'price'          => number_format($request->price, 0, ',', ' '),
+                    'driver_phone'   => $driver->phone ?? '–',
+                ]);
+
+                if ($notified) {
+                    $trip->update(['guarantor_notified' => true]);
+                }
+            } catch (\Exception $e) {
+                Log::warning('WhatsApp garant notification failed: ' . $e->getMessage());
+            }
+            // ─────────────────────────────────────────────────────────
 
             // Charger les relations
             $trip->load(['vehicle', 'driver']);
@@ -499,51 +530,51 @@ class DriverTripController extends Controller
         }
 
         try {
-            // Accepter la réservation
-            DB::table('rideshare_bookings')
-                ->where('id', $bookingId)
-                ->update(['status' => 'confirmed', 'updated_at' => now()]);
-
-            // Diminuer le nombre de places disponibles
-            DB::table('rideshare_trips')
-                ->where('id', $booking->trip_id)
-                ->decrement('available_seats', $booking->seats_requested);
-
-            // Charger le trajet Eloquent (utile pour le débit et les notifications)
+            // Charger le trajet Eloquent (utile pour l'escrow et les notifications)
             $rideshareTrip = RideshareTrip::with(['driver:id,name,phone'])->find($booking->trip_id);
 
-            // Débiter le wallet du passager
+            // ─── ESCROW : Prélever le passager et mettre en séquestre ─
+            // L'argent NE va PAS encore au chauffeur.
+            // Il sera libéré lors du scan QR d'embarquement.
             if ($totalPrice > 0) {
                 try {
-                    $passengerWallet->debit(
+                    $passengerWallet->escrow(
                         $totalPrice,
-                        'debit',
-                        'Covoiturage ' . ($rideshareTrip->from_city ?? '') . ' → ' . ($rideshareTrip->to_city ?? ''),
+                        'Séquestre covoiturage ' . ($rideshareTrip->from_city ?? '') . ' → ' . ($rideshareTrip->to_city ?? ''),
                         [
                             'bookable_type' => RideshareBooking::class,
                             'bookable_id'   => $bookingId,
-                            'description'   => 'Réservation covoiturage #' . $bookingId,
+                            'description'   => 'Escrow réservation covoiturage #' . $bookingId,
                         ]
                     );
                 } catch (\Exception $e) {
-                    // Rollback : remettre la réservation en pending et restaurer les places
-                    DB::table('rideshare_bookings')
-                        ->where('id', $bookingId)
-                        ->update(['status' => 'pending', 'updated_at' => now()]);
-                    DB::table('rideshare_trips')
-                        ->where('id', $booking->trip_id)
-                        ->increment('available_seats', $booking->seats_requested);
-                    Log::error('Wallet debit failed on rideshare booking acceptance', [
+                    Log::error('Wallet escrow failed on rideshare booking acceptance', [
                         'booking_id' => $bookingId,
                         'user_id'    => $booking->user_id,
                         'error'      => $e->getMessage(),
                     ]);
                     return response()->json([
                         'success' => false,
-                        'message' => 'Échec du prélèvement du portefeuille passager : ' . $e->getMessage(),
+                        'message' => 'Échec du prélèvement séquestre : ' . $e->getMessage(),
                     ], 422);
                 }
             }
+            // ─────────────────────────────────────────────────────────
+
+            // Accepter la réservation et enregistrer l'escrow
+            DB::table('rideshare_bookings')
+                ->where('id', $bookingId)
+                ->update([
+                    'status'          => 'confirmed',
+                    'escrow_amount'   => $totalPrice,
+                    'escrow_released' => false,
+                    'updated_at'      => now(),
+                ]);
+
+            // Diminuer le nombre de places disponibles
+            DB::table('rideshare_trips')
+                ->where('id', $booking->trip_id)
+                ->decrement('available_seats', $booking->seats_requested);
 
             // Notifier le passager que sa demande est acceptée
             $trip = $rideshareTrip;
@@ -551,7 +582,7 @@ class DriverTripController extends Controller
                 Notification::create([
                     'user_id' => $booking->user_id,
                     'title'   => '✅ Réservation confirmée !',
-                    'message' => "Votre réservation pour le trajet {$trip->from_city} → {$trip->to_city} le {$trip->date} a été acceptée par le chauffeur.",
+                    'message' => "Votre réservation pour le trajet {$trip->from_city} → {$trip->to_city} le {$trip->date} a été acceptée. Votre paiement de " . number_format($totalPrice, 0, ',', ' ') . " FCFA est sécurisé et sera versé au chauffeur après votre embarquement.",
                     'type'    => 'rideshare_booking_confirmed',
                     'data'    => json_encode([
                         'booking_id' => $bookingId,
@@ -560,17 +591,18 @@ class DriverTripController extends Controller
                     'read'    => false,
                 ]);
 
-                // Envoyer une notification WhatsApp au passager
                 $passenger = User::find($booking->user_id);
                 if ($passenger && !empty($passenger->phone)) {
                     try {
                         $whatsapp = new WhatsAppService();
-                        $date = \Carbon\Carbon::parse($trip->date)->locale('fr')->isoFormat('dddd D MMMM YYYY');
+                        $dateFormatted = \Carbon\Carbon::parse($trip->date)->locale('fr')->isoFormat('dddd D MMMM YYYY');
+
+                        // Confirmation de réservation
                         $whatsapp->sendRideshareBookingConfirmation($passenger->phone, [
                             'passenger_name' => $passenger->name,
                             'from'           => $trip->from_city,
                             'to'             => $trip->to_city,
-                            'date'           => $date,
+                            'date'           => $dateFormatted,
                             'time'           => substr($trip->departure_time ?? '', 0, 5),
                             'seats'          => $booking->seats_requested,
                             'price'          => number_format($booking->total_price, 0, ',', ' '),
@@ -578,15 +610,27 @@ class DriverTripController extends Controller
                             'driver_name'    => $trip->driver?->name ?? 'Votre conducteur',
                             'driver_phone'   => $trip->driver?->phone ?? '–',
                         ]);
+
+                        // Notification escrow (paiement sécurisé)
+                        if ($totalPrice > 0) {
+                            $whatsapp->sendEscrowNotification($passenger->phone, [
+                                'passenger_name' => $passenger->name,
+                                'from'           => $trip->from_city,
+                                'to'             => $trip->to_city,
+                                'date'           => $dateFormatted,
+                                'time'           => substr($trip->departure_time ?? '', 0, 5),
+                                'amount'         => number_format($totalPrice, 0, ',', ' '),
+                            ]);
+                        }
                     } catch (\Exception $e) {
-                        \Illuminate\Support\Facades\Log::warning('WhatsApp booking notification failed: ' . $e->getMessage());
+                        Log::warning('WhatsApp booking notification failed: ' . $e->getMessage());
                     }
                 }
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Demande acceptée avec succès',
+                'message' => 'Demande acceptée. Le paiement du passager est en séquestre et sera libéré après son embarquement.',
             ]);
 
         } catch (\Exception $e) {
@@ -640,7 +684,8 @@ class DriverTripController extends Controller
                 'rideshare_trips.from_city',
                 'rideshare_trips.to_city',
                 'rideshare_trips.date',
-                'rideshare_trips.departure_time'
+                'rideshare_trips.departure_time',
+                'rideshare_trips.driver_id'
             )
             ->first();
 
@@ -654,19 +699,56 @@ class DriverTripController extends Controller
         // Marquer comme embarqué
         DB::table('rideshare_bookings')
             ->where('id', $bookingId)
-            ->update(['status' => 'boarded', 'updated_at' => now()]);
+            ->update([
+                'status'              => 'boarded',
+                'escrow_released'     => true,
+                'escrow_released_at'  => now(),
+                'updated_at'          => now(),
+            ]);
+
+        // ─── LIBERATION ESCROW : Verser l'argent au chauffeur ────────
+        $escrowAmount = (float) ($booking->escrow_amount ?? $booking->total_price ?? 0);
+        if ($escrowAmount > 0) {
+            try {
+                $driverWallet = Wallet::getOrCreate($driver->id);
+                $driverWallet->releaseEscrow(
+                    $escrowAmount,
+                    'Covoiturage ' . $booking->from_city . ' → ' . $booking->to_city . ' — Passager : ' . $booking->passenger_name,
+                    [
+                        'bookable_type' => RideshareBooking::class,
+                        'bookable_id'   => $bookingId,
+                        'description'   => 'Libération escrow réservation #' . $bookingId,
+                    ]
+                );
+
+                Log::info('Escrow released to driver', [
+                    'booking_id' => $bookingId,
+                    'driver_id'  => $driver->id,
+                    'amount'     => $escrowAmount,
+                ]);
+            } catch (\Exception $e) {
+                // On log l'erreur mais on ne bloque pas l'embarquement
+                Log::error('Escrow release failed on check-in', [
+                    'booking_id' => $bookingId,
+                    'driver_id'  => $driver->id,
+                    'error'      => $e->getMessage(),
+                ]);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────
 
         return response()->json([
             'success' => true,
-            'message' => 'Passager embarqué avec succès',
+            'message' => 'Passager embarqué avec succès. ' . ($escrowAmount > 0 ? number_format($escrowAmount, 0, ',', ' ') . ' FCFA ont été crédités sur votre portefeuille.' : ''),
             'data' => [
-                'booking_id'     => $bookingId,
-                'passenger_name' => $booking->passenger_name,
-                'passenger_phone'=> $booking->passenger_phone,
-                'seats'          => $booking->seats_requested,
-                'from'           => $booking->from_city,
-                'to'             => $booking->to_city,
-                'date'           => $booking->date,
+                'booking_id'      => $bookingId,
+                'passenger_name'  => $booking->passenger_name,
+                'passenger_phone' => $booking->passenger_phone,
+                'seats'           => $booking->seats_requested,
+                'from'            => $booking->from_city,
+                'to'              => $booking->to_city,
+                'date'            => $booking->date,
+                'amount_received' => $escrowAmount,
             ],
         ]);
     }

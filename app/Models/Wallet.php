@@ -120,4 +120,55 @@ class Wallet extends Model
             ], $meta));
         });
     }
+
+    /**
+     * Mettre un montant en séquestre (escrow)
+     * Prélève le passager mais l'argent n'est PAS encore versé au chauffeur.
+     * Il sera libéré lors du scan QR d'embarquement.
+     */
+    public function escrow(
+        float  $amount,
+        string $label,
+        array  $meta = []
+    ): WalletTransaction {
+        return DB::transaction(function () use ($amount, $label, $meta) {
+            $wallet = self::where('id', $this->id)->lockForUpdate()->first();
+
+            if ($wallet->balance < $amount) {
+                throw new \Exception('Solde insuffisant. Solde disponible : ' . number_format($wallet->balance, 0, ',', ' ') . ' FCFA');
+            }
+
+            $balanceBefore = (float) $wallet->balance;
+            $balanceAfter  = $balanceBefore - $amount;
+
+            $wallet->balance = $balanceAfter;
+            $wallet->save();
+
+            $this->balance = $balanceAfter;
+
+            return WalletTransaction::create(array_merge([
+                'wallet_id'      => $wallet->id,
+                'user_id'        => $wallet->user_id,
+                'type'           => 'escrow',
+                'amount'         => $amount,
+                'balance_before' => $balanceBefore,
+                'balance_after'  => $balanceAfter,
+                'label'          => $label,
+                'payment_status' => 'success',
+            ], $meta));
+        });
+    }
+
+    /**
+     * Libérer l'escrow vers le wallet du chauffeur
+     * Appelé lors du scan QR d'embarquement du passager.
+     * Crédite le chauffeur du montant mis en séquestre.
+     */
+    public function releaseEscrow(
+        float  $amount,
+        string $label,
+        array  $meta = []
+    ): WalletTransaction {
+        return $this->credit($amount, 'escrow_release', $label, $meta);
+    }
 }
